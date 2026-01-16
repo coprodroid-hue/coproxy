@@ -1,1 +1,29 @@
+name: Proxy Converter
 
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Запуск каждые 6 часов
+  workflow_dispatch:      # Кнопка для ручного запуска
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download and Convert
+        run: |
+          # Скачиваем чужой список (замени URL на нужный)
+          curl -L https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt -o raw.txt
+          
+          # Очищаем старый файл и добавляем префикс socks5:// к каждой строке
+          sed 's/^/socks5:\/\//' raw.txt > list.txt
+          
+      - name: Commit and Push
+        run: |
+          git config --global user.name "ProxyBot"
+          git config --global user.email "bot@github.com"
+          git add list.txt
+          git commit -m "Update proxy list" || exit 0
+          git push
