@@ -1,9 +1,9 @@
-name: Proxy Converter
+name: Proxy Converter and Checker
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Кнопка ручного запуска
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *" # Автозапуск каждые 6 часов
 
 jobs:
   build:
@@ -14,23 +14,51 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download and Convert
+      - name: Install dependencies
+        run: sudo apt-get install -y netcat-openbsd
+
+      - name: Download, Convert and Check
         run: |
-          # Скачиваем список (SOCKS5)
-          curl -L "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/all/data.txt" -o raw.txt
+          # 1. Собираем прокси из надежных источников
+          urls=(
+            "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt"
+          )
           
-          # Проверяем, что файл не пустой, и добавляем префикс
-          if [ -s raw.txt ]; then
-            sed 's/^/socks5:\/\//' raw.txt > list.txt
+          touch raw_combined.txt
+          for url in "${urls[@]}"; do
+            curl -L "$url" >> raw_combined.txt
+          done
+
+          # 2. Очищаем от префиксов и удаляем дубликаты
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/)//I' raw_combined.txt | sort -u > cleaned.txt
+
+          # 3. Проверка прокси (Чекер)
+          echo "Starting proxy check (top 100)..."
+          touch live_proxies.txt
+          
+          # Берем первые 100 штук, чтобы уложиться в лимиты времени
+          head -n 100 cleaned.txt | while read line; do
+            # Разделяем IP и Порт
+            IP=$(echo $line | cut -d':' -f1)
+            PORT=$(echo $line | cut -d':' -f2)
+            
+            # Пробуем подключиться к порту (таймаут 2 сек)
+            if nc -z -w 2 $IP $PORT > /dev/null 2>&1; then
+              echo "socks5://$line" >> live_proxies.txt
+              echo "✅ Added: $line"
+            else
+              echo "❌ Failed: $line"
+            fi
+          done
+
+          # 4. Финализируем список
+          if [ -s live_proxies.txt ]; then
+            mv live_proxies.txt list.txt
           else
-            echo "Download failed or file is empty"
-            exit 1
+            echo "No live proxies found, keeping old list."
           fi
-          
+
       - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add list.txt
-          git commit -m "Update proxy list" || exit 0
-          git push
+          git config --global user.email "github-actions[bot]@users
