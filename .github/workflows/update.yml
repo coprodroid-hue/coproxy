@@ -1,4 +1,4 @@
-name: Proxy Converter and Deep Checker
+name: Multi-Protocol Proxy Checker (1000 per type)
 
 on:
   workflow_dispatch:
@@ -14,47 +14,55 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download and Deep Check
+      - name: Check and Generate Lists
         run: |
-          # 1. Сбор прокси
-          urls=(
-            "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt"
-          )
-          for url in "${urls[@]}"; do curl -L "$url" >> raw.txt; done
+          # Универсальная функция проверки
+          # Аргументы: $1-тип(socks5/socks4), $2-вход, $3-выход, $4-префикс
+          check_proxies() {
+            local type=$1; local input=$2; local output=$3; local prefix=$4
+            echo "Starting check for $type..."
+            touch "$output"
+            # Проверяем в 100 потоков для скорости
+            cat "$input" | xargs -P 100 -I {} sh -c "
+              proxy='{}'
+              if curl --$type-hostname \$proxy -sI --connect-timeout 5 --max-time 10 https://www.google.com > /dev/null 2>&1; then
+                echo '$prefix'\$proxy >> $output
+              fi
+            " || true
+            echo "Finished $type. Found $(wc -l < $output) live proxies."
+          }
 
-          # 2. Очистка формата
-          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 400 > cleaned.txt
+          # --- SOCKS5 ---
+          curl -L "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt" >> s5_raw.txt
+          curl -L "https://raw.githubusercontent.com/elliottophellia/proxylist/refs/heads/master/results/socks5/global/socks5_checked.txt" >> s5_raw.txt
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' s5_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 1000 > s5_clean.txt
+          check_proxies "socks5" "s5_clean.txt" "socks5.txt" "socks5://"
 
-          # 3. ГЛУБОКАЯ ПРОВЕРКА (проверка реального доступа в интернет)
-          echo "Deep checking proxies via curl..."
-          touch live_proxies.txt
+          # --- SOCKS4 ---
+          curl -L "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks4/raw/all.txt" >> s4_raw.txt
+          curl -L "https://raw.githubusercontent.com/elliottophellia/proxylist/refs/heads/master/results/socks4/global/socks4_checked.txt" >> s4_raw.txt
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' s4_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 1000 > s4_clean.txt
+          check_proxies "socks4" "s4_clean.txt" "socks4.txt" "socks4://"
+
+          # --- HTTP ---
+          curl -L "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/http/raw/all.txt" >> http_raw.txt
+          curl -L "https://raw.githubusercontent.com/elliottophellia/proxylist/refs/heads/master/results/http/global/http_checked.txt" >> http_raw.txt
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' http_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 1000 > http_clean.txt
           
-          # Проверяем в 30 потоков, чтобы не забанили за спам
-          cat cleaned.txt | xargs -P 30 -I {} sh -c '
-            proxy="{}"
-            # Пробуем скачать заголовки с google.com через socks5 прокси
-            # --socks5-hostname говорит curl использовать прокси для DNS тоже
-            if curl --socks5-hostname "$proxy" -sI --connect-timeout 5 --max-time 10 https://www.google.com > /dev/null; then
-              echo "socks5://$proxy" >> live_proxies.txt
-              echo "✅ WORKING: $proxy"
-            else
-              echo "❌ DEAD: $proxy"
+          echo "Starting check for http..."
+          touch http.txt
+          cat http_clean.txt | xargs -P 100 -I {} sh -c "
+            proxy='{}'
+            if curl -x http://\$proxy -sI --connect-timeout 5 --max-time 10 https://www.google.com > /dev/null 2>&1; then
+              echo 'http://'\$proxy >> http.txt
             fi
-          '
-
-          # 4. Сохранение
-          if [ -s live_proxies.txt ]; then
-            sort -u live_proxies.txt > list.txt
-            echo "Total working proxies found: $(wc -l < list.txt)"
-          else
-            echo "socks5://1.1.1.1:1111" > list.txt # Заглушка
-            echo "No working proxies found."
-          fi
+          " || true
+          echo "Finished http. Found $(wc -l < http.txt) live proxies."
 
       - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add list.txt
-          git commit -m "Updated with verified working proxies" || exit 0
+          git add socks5.txt socks4.txt http.txt
+          git commit -m "Update lists (1000 checked per type): $(date +'%Y-%m-%d')" || exit 0
           git push
