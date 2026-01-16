@@ -15,7 +15,7 @@ jobs:
       - name: Download and Convert
         run: |
           # Скачиваем чужой список (замени URL на нужный)
-          curl -L https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt -o raw.txt
+          curl -L https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/all/data.txt
           
           # Очищаем старый файл и добавляем префикс socks5:// к каждой строке
           sed 's/^/socks5:\/\//' raw.txt > list.txt
