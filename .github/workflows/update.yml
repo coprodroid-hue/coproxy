@@ -1,4 +1,4 @@
-name: Proxy Converter and Checker
+name: Proxy Converter and Deep Checker
 
 on:
   workflow_dispatch:
@@ -14,37 +14,43 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
-
-      - name: Download, Convert and Check
+      - name: Download and Deep Check
         run: |
-          # Собираем данные
+          # 1. Сбор прокси
           urls=(
             "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt"
             "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
+            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt"
           )
-          for url in "${urls[@]}"; do curl -L "$url" >> raw_combined.txt; done
+          for url in "${urls[@]}"; do curl -L "$url" >> raw.txt; done
 
-          # Очистка (убрали лишний пробел в grep)
-          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' raw_combined.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 300 > cleaned.txt
+          # 2. Очистка формата
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 400 > cleaned.txt
 
-          # Проверка
+          # 3. ГЛУБОКАЯ ПРОВЕРКА (проверка реального доступа в интернет)
+          echo "Deep checking proxies via curl..."
           touch live_proxies.txt
-          cat cleaned.txt | xargs -P 50 -I {} sh -c '
-            line="{}"
-            IP=$(echo "$line" | cut -d: -f1)
-            PORT=$(echo "$line" | cut -d: -f2)
-            if nc -z -w 5 "$IP" "$PORT"; then
-              echo "socks5://$line" >> live_proxies.txt
+          
+          # Проверяем в 30 потоков, чтобы не забанили за спам
+          cat cleaned.txt | xargs -P 30 -I {} sh -c '
+            proxy="{}"
+            # Пробуем скачать заголовки с google.com через socks5 прокси
+            # --socks5-hostname говорит curl использовать прокси для DNS тоже
+            if curl --socks5-hostname "$proxy" -sI --connect-timeout 5 --max-time 10 https://www.google.com > /dev/null; then
+              echo "socks5://$proxy" >> live_proxies.txt
+              echo "✅ WORKING: $proxy"
+            else
+              echo "❌ DEAD: $proxy"
             fi
           '
 
-          # Гарантируем появление файла
+          # 4. Сохранение
           if [ -s live_proxies.txt ]; then
             sort -u live_proxies.txt > list.txt
+            echo "Total working proxies found: $(wc -l < list.txt)"
           else
-            echo "socks5://1.1.1.1:1111" > list.txt # Заглушка, если ничего не найдено
+            echo "socks5://1.1.1.1:1111" > list.txt # Заглушка
+            echo "No working proxies found."
           fi
 
       - name: Commit and Push
@@ -52,5 +58,5 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add list.txt
-          git commit -m "Update list" || exit 0
+          git commit -m "Updated with verified working proxies" || exit 0
           git push
