@@ -19,8 +19,6 @@ jobs:
           # 1. Сбор прокси
           urls=(
             "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt"
-            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
-            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt"
           )
           for url in "${urls[@]}"; do curl -L "$url" >> raw.txt; done
 
