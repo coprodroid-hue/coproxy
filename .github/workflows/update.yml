@@ -1,29 +1,36 @@
 name: Proxy Converter
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *' # Запуск каждые 6 часов
-  workflow_dispatch:      # Кнопка для ручного запуска
+    - cron: "0 */6 * * *"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Download and Convert
         run: |
-          # Скачиваем чужой список (замени URL на нужный)
-          curl -L https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/all/data.txt -o raw.txt
+          # Скачиваем список (SOCKS5)
+          curl -L "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/all/data.txt" -o raw.txt
           
-          # Очищаем старый файл и добавляем префикс socks5:// к каждой строке
-          sed 's/^/socks5:\/\//' raw.txt > list.txt
+          # Проверяем, что файл не пустой, и добавляем префикс
+          if [ -s raw.txt ]; then
+            sed 's/^/socks5:\/\//' raw.txt > list.txt
+          else
+            echo "Download failed or file is empty"
+            exit 1
+          fi
           
       - name: Commit and Push
         run: |
-          git config --global user.name "ProxyBot"
-          git config --global user.email "bot@github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add list.txt
           git commit -m "Update proxy list" || exit 0
           git push
