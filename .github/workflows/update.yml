@@ -1,9 +1,9 @@
 name: Proxy Converter and Checker
 
 on:
-  workflow_dispatch: # Кнопка ручного запуска
+  workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *" # Автозапуск каждые 6 часов
+    - cron: "0 */6 * * *"
 
 jobs:
   build:
@@ -14,51 +14,54 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: sudo apt-get install -y netcat-openbsd
+      - name: Install netcat
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
 
       - name: Download, Convert and Check
         run: |
-          # 1. Собираем прокси из надежных источников
-          urls=(
-            "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt"
-          )
-          
+          # 1. Создаем файлы, чтобы избежать ошибок "file not found"
           touch raw_combined.txt
-          for url in "${urls[@]}"; do
-            curl -L "$url" >> raw_combined.txt
-          done
-
-          # 2. Очищаем от префиксов и удаляем дубликаты
-          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/)//I' raw_combined.txt | sort -u > cleaned.txt
-
-          # 3. Проверка прокси (Чекер)
-          echo "Starting proxy check (top 100)..."
+          touch cleaned.txt
           touch live_proxies.txt
-          
-          # Берем первые 100 штук, чтобы уложиться в лимиты времени
-          head -n 100 cleaned.txt | while read line; do
-            # Разделяем IP и Порт
-            IP=$(echo $line | cut -d':' -f1)
-            PORT=$(echo $line | cut -d':' -f2)
-            
-            # Пробуем подключиться к порту (таймаут 2 сек)
-            if nc -z -w 2 $IP $PORT > /dev/null 2>&1; then
-              echo "socks5://$line" >> live_proxies.txt
-              echo "✅ Added: $line"
-            else
-              echo "❌ Failed: $line"
-            fi
-          done
 
-          # 4. Финализируем список
+          # 2. Собираем прокси
+          curl -L "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt" >> raw_combined.txt
+          curl -L "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt" >> raw_combined.txt
+          curl -L "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt" >> raw_combined.txt
+
+          # 3. Чистим: удаляем префиксы, пробелы и дубликаты
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/)//I' raw_combined.txt | tr -d '\r' | sort -u | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$' > cleaned.txt
+
+          # 4. Проверка (Чекер)
+          echo "Checking proxies..."
+          while read -r line; do
+            [ -z "$line" ] && continue
+            IP=$(echo "$line" | cut -d':' -f1)
+            PORT=$(echo "$line" | cut -d':' -f2)
+            
+            # Проверка порта
+            if nc -z -w 3 "$IP" "$PORT" > /dev/null 2>&1; then
+              echo "socks5://$line" >> live_proxies.txt
+            fi
+            
+            # Ограничение 100 рабочих прокси, чтобы не ждать вечно
+            if [ $(wc -l < live_proxies.txt) -ge 100 ]; then
+              break
+            fi
+          done < cleaned.txt
+
+          # 5. Сохраняем результат
           if [ -s live_proxies.txt ]; then
-            mv live_proxies.txt list.txt
+            cp live_proxies.txt list.txt
           else
-            echo "No live proxies found, keeping old list."
+            echo "No live proxies found"
+            exit 1
           fi
 
       - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add list.txt
+          git commit -m "Update list" || exit 0
+          git push
