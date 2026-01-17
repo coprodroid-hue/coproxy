@@ -1,4 +1,4 @@
-name: Mega-Source Proxy Checker
+name: Proxy Converter and Checker
 
 on:
   workflow_dispatch:
@@ -17,70 +17,41 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y netcat-openbsd curl
 
-      - name: Check and Generate Lists
+      - name: Download, Convert and Check
         run: |
-          # Функция проверки (100 потоков, 10с таймаут)
-          check_proxies() {
-            local type=$1; local input=$2; local output=$3; local prefix=$4
-            echo "Starting check for $type..."
-            touch "$output"
-            [ ! -s "$input" ] && return
-            
-            cat "$input" | xargs -P 100 -I {} sh -c "
-              proxy='{}'
-              IP=\$(echo \$proxy | cut -d: -f1)
-              PORT=\$(echo \$proxy | cut -d: -f2)
-              
-              if nc -z -w 5 \$IP \$PORT > /dev/null 2>&1; then
-                if curl --$type-hostname \$proxy -sI --connect-timeout 10 --max-time 15 https://1.1.1.1 > /dev/null 2>&1; then
-                  echo '$prefix'\$proxy >> $output
-                fi
+          # 1. Сбор данных
+          urls=(
+            "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt"
+            "https://raw.githubusercontent.com/elliottophellia/proxylist/refs/heads/master/results/socks5/global/socks5_checked.txt"
+          )
+          for url in "${urls[@]}"; do curl -L -s "$url" >> raw_combined.txt || true; done
+
+          # 2. Очистка (удаляем протоколы и берем первые 1000)
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' raw_combined.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 1000 > cleaned.txt
+
+          # 3. Проверка (100 потоков, тайм-аут 10 секунд)
+          touch live_proxies.txt
+          cat cleaned.txt | xargs -P 100 -I {} sh -c '
+            proxy="{}"
+            # Проверка порта + глубокий тест через Cloudflare
+            if nc -z -w 5 $(echo "$proxy" | tr ":" " ") > /dev/null 2>&1; then
+              if curl --socks5-hostname "$proxy" -sI --connect-timeout 10 --max-time 15 https://1.1.1.1 > /dev/null 2>&1; then
+                echo "socks5://$proxy" >> live_proxies.txt
               fi
-            " || true
-            echo "Finished $type. Found $(wc -l < $output) live proxies."
-          }
-
-          # --- СБОР SOCKS5 (Теперь 10+ источников) ---
-          urls_s5=(
-            "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/main/socks5/raw/all.txt"
-            "https://raw.githubusercontent.com/elliottophellia/proxylist/master/results/socks5/global/socks5_checked.txt"
-            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
-            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt"
-            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5"
-            "https://raw.githubusercontent.com/Zaeem20/free-proxy-list/master/socks5.txt"
-            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt"
-            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt"
-            "https://raw.githubusercontent.com/officialputuid/Proxy-List/master/socks5.txt"
-            "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt"
-          )
-          for url in "${urls_s5[@]}"; do curl -L -s "$url" >> s5_raw.txt || true; done
-          # Чистим, перемешиваем (shuf) и берем 3000 на тест
-          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' s5_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | shuf | head -n 3000 > s5_clean.txt
-          check_proxies "socks5" "s5_clean.txt" "socks5.txt" "socks5://"
-
-          # --- СБОР HTTP ---
-          urls_http=(
-            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
-            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http"
-            "https://raw.githubusercontent.com/officialputuid/Proxy-List/master/http.txt"
-            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt"
-          )
-          for url in "${urls_http[@]}"; do curl -L -s "$url" >> http_raw.txt || true; done
-          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' http_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | shuf | head -n 2000 > http_clean.txt
-          
-          echo "Checking http..."
-          touch http.txt
-          cat http_clean.txt | xargs -P 100 -I {} sh -c "
-            proxy='{}'
-            if curl -x http://\$proxy -sI --connect-timeout 10 --max-time 15 https://1.1.1.1 > /dev/null 2>&1; then
-              echo 'http://'\$proxy >> http.txt
             fi
-          " || true
+          ' || true
+
+          # 4. Формирование финального файла
+          if [ -s live_proxies.txt ]; then
+            sort -u live_proxies.txt > list.txt
+          else
+            echo "socks5://1.1.1.1:1111" > list.txt
+          fi
 
       - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add socks5.txt socks4.txt http.txt
-          git commit -m "Update: [S5:$(wc -l < socks5.txt), HTTP:$(wc -l < http.txt)]" || exit 0
+          git add list.txt
+          git commit -m "Update list: $(date +'%Y-%m-%d %H:%M') [Found: $(wc -l < list.txt)]" || exit 0
           git push
