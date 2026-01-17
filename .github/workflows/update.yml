@@ -15,27 +15,35 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd curl
 
       - name: Check and Generate Lists
         run: |
-          # Универсальная функция проверки
+          # Оптимизированная функция проверки
           check_proxies() {
             local type=$1; local input=$2; local output=$3; local prefix=$4
             echo "Starting check for $type..."
             touch "$output"
             [ ! -s "$input" ] && return
-            # 100 потоков для скорости
+            
+            # 100 потоков. Тайм-аут 10с на коннект, 15с на весь запрос.
             cat "$input" | xargs -P 100 -I {} sh -c "
               proxy='{}'
-              if curl --$type-hostname \$proxy -sI --connect-timeout 5 --max-time 10 https://www.google.com > /dev/null 2>&1; then
-                echo '$prefix'\$proxy >> $output
+              IP=\$(echo \$proxy | cut -d: -f1)
+              PORT=\$(echo \$proxy | cut -d: -f2)
+              
+              # Шаг 1: Быстрый чекер порта (тайм-аут 5с)
+              if nc -z -w 5 \$IP \$PORT > /dev/null 2>&1; then
+                # Шаг 2: Глубокий чекер через Cloudflare (тайм-аут 10с)
+                if curl --$type-hostname \$proxy -sI --connect-timeout 10 --max-time 15 https://1.1.1.1 > /dev/null 2>&1; then
+                  echo '$prefix'\$proxy >> $output
+                fi
               fi
             " || true
             echo "Finished $type. Found $(wc -l < $output) live proxies."
           }
 
-          # --- Сбор SOCKS5 ---
+          # --- SOCKS5 (2000 шт на тест) ---
           urls_s5=(
             "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt"
             "https://raw.githubusercontent.com/elliottophellia/proxylist/refs/heads/master/results/socks5/global/socks5_checked.txt"
@@ -48,39 +56,35 @@ jobs:
             "https://raw.githubusercontent.com/manuGMGM/proxy-365/main/SOCKS5.txt"
           )
           for url in "${urls_s5[@]}"; do curl -L -s "$url" >> s5_raw.txt || true; done
-          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' s5_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 1500 > s5_clean.txt
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' s5_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 2000 > s5_clean.txt
           check_proxies "socks5" "s5_clean.txt" "socks5.txt" "socks5://"
 
-          # --- Сбор SOCKS4 ---
+          # --- SOCKS4 (1000 шт на тест) ---
           urls_s4=(
             "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks4/raw/all.txt"
-            "https://raw.githubusercontent.com/elliottophellia/proxylist/refs/heads/master/results/socks4/global/socks4_checked.txt"
             "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt"
             "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt"
-            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt"
           )
           for url in "${urls_s4[@]}"; do curl -L -s "$url" >> s4_raw.txt || true; done
           sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' s4_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 1000 > s4_clean.txt
           check_proxies "socks4" "s4_clean.txt" "socks4.txt" "socks4://"
 
-          # --- Сбор HTTP ---
+          # --- HTTP (2000 шт на тест) ---
           urls_http=(
             "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/http/raw/all.txt"
             "https://raw.githubusercontent.com/elliottophellia/proxylist/refs/heads/master/results/http/global/http_checked.txt"
             "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
             "https://raw.githubusercontent.com/Zaeem20/free-proxy-list/master/http.txt"
             "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt"
-            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt"
-            "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt"
           )
           for url in "${urls_http[@]}"; do curl -L -s "$url" >> http_raw.txt || true; done
-          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' http_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 1500 > http_clean.txt
+          sed -E 's/^(socks5:\/\/|socks4:\/\/|http:\/\/|https:\/\/)//I' http_raw.txt | tr -d '\r' | sort -u | grep -E '^[0-9.]+:[0-9]+$' | head -n 2000 > http_clean.txt
           
           echo "Checking http..."
           touch http.txt
           cat http_clean.txt | xargs -P 100 -I {} sh -c "
             proxy='{}'
-            if curl -x http://\$proxy -sI --connect-timeout 5 --max-time 10 https://www.google.com > /dev/null 2>&1; then
+            if curl -x http://\$proxy -sI --connect-timeout 10 --max-time 15 https://1.1.1.1 > /dev/null 2>&1; then
               echo 'http://'\$proxy >> http.txt
             fi
           " || true
@@ -90,5 +94,5 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add socks5.txt socks4.txt http.txt
-          git commit -m "Mega update: $(date +'%Y-%m-%d %H:%M')" || exit 0
-          git push
+          # Коммитим только если есть изменения
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update lists: $(date +'%Y-%m-%d %H:%M') [S5:$(wc -l < socks5.txt), S4:$(wc -l < socks4.txt), HTTP:$(wc -l < http.txt)]" && git push)
